@@ -1,0 +1,17 @@
+# Archivos sensibles:
+.env
+# |->Variables de entorno
+credentials.json
+# |->Google credentials
+
+# Entorno virtual de Python
+venv/
+__pycache__/
+
+# Archivos del sistema (OS junk)
+.DS_Store
+Thumbs.db
+
+# Archivos de configuración de editores
+.vscode/
+.idea/
