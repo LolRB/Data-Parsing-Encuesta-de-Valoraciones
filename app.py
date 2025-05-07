@@ -1,255 +1,349 @@
 """
-Script para obtener el estado y calificaciones de múltiples entregables de un curso en Moodle,
-y exportarlos a Google Sheets de manera organizada.
+Este script automatiza el proceso de extracción de respuestas de la encuesta de valoración 
+de las acciones de formación de los cursos en Moodle. 
+
+El flujo de trabajo es el siguiente:
+1. Inicia sesión en Moodle utilizando las credenciales proporcionadas.
+2. Extrae los datos de los usuarios (nombre completo, email) que completaron la encuesta, a través de la llamada a la API de Moodle.
+3. Descarga el archivo CSV de las respuestas de la encuesta utilizando Selenium para interactuar con la página de Moodle y hacer clic en el botón de descarga.
+4. Procesa el contenido del archivo CSV descargado, extrayendo los datos relevantes (nombre, email y respuestas a las preguntas).
+5. Combina los datos de los usuarios con sus respuestas a la encuesta.
+6. Sube los datos combinados a una hoja de Google Sheets para su análisis y visualización.
+
+Este script se conecta a la plataforma Moodle, realiza la autenticación, obtiene los datos de los usuarios,
+descarga las respuestas de la encuesta y las carga en Google Sheets utilizando la API de Google.
+
+Dependencias necesarias:
+- `requests`: para interactuar con la API de Moodle.
+- `selenium`: para automatizar la descarga del archivo CSV desde la interfaz web de Moodle.
+- `gspread`: para interactuar con Google Sheets.
+- `google.oauth2`: para la autenticación con la API de Google.
+- `dotenv`: para cargar las variables de configuración desde un archivo `.env`.
 """
 
-import os
 import re
+import os
 import time
 from datetime import datetime
-from requests.exceptions import RequestException
-import gspread
 import requests
-from bs4 import BeautifulSoup
-# IGNORAR IMPORT ERROR. Bug de Pylint. Funciona aunque marca error.
 from dotenv import load_dotenv
+import gspread
+from selenium.webdriver.common.by import By
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from google.oauth2.service_account import Credentials
 
 # ===============================
-# 1. Cargar configuraciones .env
+# 1. Cargar configuración desde .env
 # ===============================
 load_dotenv()
-
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
 COURSE_ID = int(os.getenv("COURSE_ID"))
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME")
 WORKSHEET_NAME = os.getenv("WORKSHEET_NAME")
-CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
+GOOGLE_CRED_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
+SURVEY_ASSIGN_ID = os.getenv("SURVEY_ASSIGN_ID")
+SURVEY_CSV_PARAM = os.getenv("SURVEY_CSV_PARAM", "")
 
-# Leer múltiples entregables desde .env
-ids_raw = os.getenv("DELIVERABLE_IDS", "")
-labels_raw = os.getenv("DELIVERABLE_LABELS", "")
-
-# Convertir a listas eliminando espacios
-ENTREGABLE_IDS = [e.strip() for e in ids_raw.split(",") if e.strip().isdigit()]
-ENTREGABLE_LABELS = [l.strip() for l in labels_raw.split(",") if l.strip()]
-
-# Validación de longitud
-if len(ENTREGABLE_IDS) != len(ENTREGABLE_LABELS):
-    raise ValueError(
-        "DELIVERABLE_IDS y DELIVERABLE_LABELS deben tener la misma cantidad de elementos.")
-
-# ==============================
-# 2. Establecer sesión en Moodle
-# ==============================
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-session = requests.Session()
 
-# Obtener token de login
-LOGIN_URL = "https://prodep.capacitacioncontinua.mx/login/index.php"
-res = session.get(LOGIN_URL, headers=HEADERS, verify=False)
-res.raise_for_status()
-match = re.search(r'name="logintoken" value="(\w+)"', res.text)
-if not match:
-    raise ValueError(
-        "No se encontró el logintoken en la página de inicio de sesión.")
-logintoken = match.group(1)
 
-# Enviar login
-res = session.post(LOGIN_URL, data={
-    "username": USERNAME,
-    "password": PASSWORD,
-    "anchor": "",
-    "logintoken": logintoken
-}, headers=HEADERS, verify=False, allow_redirects=False)
-res.raise_for_status()
+def get_selenium_driver():
+    """
+    Configura y devuelve una instancia de WebDriver para Chrome con opciones de ejecución en segundo plano.
+    Este método configura el WebDriver de Selenium para usar Google Chrome en modo 'headless', es decir, sin abrir una ventana del navegador, lo que permite ejecutar el script en entornos sin interfaz gráfica. 
+    El WebDriver es configurado con las opciones necesarias para la ejecución en segundo plano y luego se devuelve para ser utilizado en otras funciones.
 
-# Visitar página principal para estabilizar sesión
-res = session.get("https://prodep.capacitacioncontinua.mx/my/",
-                  headers=HEADERS, verify=False)
-res.raise_for_status()
+    Returns:
+        webdriver.Chrome: Instancia del WebDriver de Chrome configurada para ejecutar en segundo plano.
+    """
+    chrome_options = Options()
+    # Ejecutar en segundo plano sin abrir el navegador
+    chrome_options.add_argument("--headless")
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
 
-# Obtener sesskey para llamadas AJAX
-sesskey_match = re.search(
-    r'sesskey["\']*\s*:?\s*["\']([a-zA-Z0-9]+)', res.text)
-if not sesskey_match:
-    raise ValueError("No se encontró el sesskey tras el login.")
-sesskey = sesskey_match.group(1)
 
-# ===============================
-# 3. Obtener usuarios del curso
-# ===============================
-AJAX_URL = "https://prodep.capacitacioncontinua.mx/lib/ajax/service.php"
-payload_users = [{
-    "index": 0,
-    "methodname": "gradereport_grader_get_users_in_report",
-    "args": {"courseid": COURSE_ID}
-}]
-resp = session.post(f"{AJAX_URL}?sesskey={sesskey}&info=gradereport_grader_get_users_in_report",
-                    json=payload_users, headers=HEADERS, verify=False)
-resp.raise_for_status()
+def download_survey_with_selenium():
+    """
+    Utiliza Selenium para abrir el navegador, autenticar, y hacer clic en el botón de descarga
+    para obtener el archivo CSV de la encuesta.
+    """
+    # Inicializar WebDriver (asegúrate de tener el driver para tu navegador)
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
 
-user_list = []
-user_info = {}
-data_users = resp.json()[0].get("data", {}).get("users", [])
-for u in data_users:
-    uid = u.get("id")
-    name = u.get("fullname")
-    email = u.get("email")
-    if uid and email:
-        user_list.append(uid)
-        user_info[email] = {"name": name, "email": email}
+    driver = webdriver.Chrome(service=Service(
+        executable_path="C:/chromedriver-win64/chromedriver-win64/chromedriver.exe"), options=options)
 
-# ==================================================
-# 4. Obtener datos de cada entregable por separado
-# ==================================================
-status_data = {}
+    # Accede a la página de la encuesta
+    driver.get(
+        f"https://prodep.capacitacioncontinua.mx/mod/feedback/show_entries.php?id={SURVEY_ASSIGN_ID}")
+    time.sleep(3)  # Esperar que la página cargue
 
-for entregable_id, label in zip(ENTREGABLE_IDS, ENTREGABLE_LABELS):
-    URL = f"https://prodep.capacitacioncontinua.mx/mod/assign/view.php?id={entregable_id}&action=grading"
+    # Iniciar sesión con las credenciales
+    driver.find_element(By.NAME, "username").send_keys(USERNAME)
+    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
+    driver.find_element(By.ID, "loginbtn").click()
 
-    print(f"🔄 Procesando entregable: {label} (ID {entregable_id})")
+    time.sleep(3)  # Esperar a que el login se complete
 
-    # Reintentos automáticos
-    SUCCESS = False
-    for attempt in range(1, 4):  # 3 intentos máximo
-        try:
-            time.sleep(2)  # Esperar 2 segundos para no saturar el servidor
-            res = session.get(URL, headers=HEADERS, verify=False, timeout=15)
-            res.raise_for_status()
-            SUCCESS = True
-            break
-        except RequestException as e:
-            print(
-                f"⏳ Intento {attempt} fallido para {label} (ID {entregable_id}): {e}")
-            if attempt < 3:
-                print("🔁 Reintentando...")
-            else:
-                print(
-                    f"❌ Falló definitivamente al intentar acceder a {label}. Pasando al siguiente.")
+    # Esperar que la página cargue completamente después del login
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.XPATH, '//form[contains(@class, "dataformatselector")]')))
 
-    if not SUCCESS:
-        continue
+    # Identificar el formulario para la descarga usando su id dinámico
+    form_id = driver.find_element(
+        By.XPATH, '//form[contains(@class, "dataformatselector")]')
 
-    soup = BeautifulSoup(res.text, "html.parser")
-    table = soup.find("table", class_="generaltable")
-    if not table:
+    # Esperar que la opción por defecto (CSV) esté seleccionada. Si no, seleccionamos CSV manualmente
+    select_element = form_id.find_element(By.ID, "downloadtype_download")
+    current_value = select_element.get_attribute('value')
+
+    if current_value != 'csv':
+        select_element.click()
+        option_csv = select_element.find_element(
+            By.XPATH, "//option[@value='csv']")
+        option_csv.click()
+        time.sleep(2)  # Esperar a que se cambie la opción a CSV
+
+    # Ahora hacer clic en el botón de descarga (usando el id dinámico)
+    download_button = form_id.find_element(
+        By.XPATH, '//button[@type="submit"]')
+    download_button.click()
+
+    # Esperar a que la descarga se complete (ajustar según sea necesario)
+    time.sleep(5)
+
+    # Path del archivo descargado (asegúrate de que el archivo se guarde en esta ubicación)
+    download_path = r"C:\Users\rbueno\Downloads\Encuesta de valoración de las acciones de formación 2024.csv"
+
+    # Verificar que el archivo existe antes de leerlo
+    if not os.path.exists(download_path):
         print(
-            f"⚠️ Advertencia: No se encontró la tabla de entregas para el entregable {label} (ID {entregable_id}).")
-        continue
+            f"Error: El archivo no fue encontrado en {download_path}. Asegúrate de que la descarga se haya completado correctamente.")
+        driver.quit()
+        return None
 
-    for row in table.select("tbody tr"):
-        try:
-            name_cell = row.select_one("td.c2 a")
-            email_cell = row.select_one("td.c3.email")
-            status_cell = row.select_one("td.c4")
-            grade_cell = row.select_one("td.c5")
-            modified_cell = row.select_one("td.c7")
+    # Leer el contenido del archivo descargado
+    with open(download_path, "r", encoding="utf-8") as file:
+        csv_text = file.read()
 
-            if not name_cell or not email_cell:
-                continue
+    driver.quit()  # Cerrar el navegador
 
-            full_name = name_cell.text.strip()
-            email = email_cell.text.strip()
+    return csv_text
 
-            # Asegurar entrada única por email
-            if email not in status_data:
-                status_data[email] = {
-                    "name": full_name,
-                    "email": email
-                }
 
-            # Obtener estatus
-            divs_status = status_cell.select("div")
-            STATUS_TEXT = "Sin entrega"
-            for div in divs_status:
-                class_list = div.get("class", [])
-                if "submissionstatusdraft" in class_list:
-                    STATUS_TEXT = "Borrador"
-                elif "submissionstatussubmitted" in class_list:
-                    STATUS_TEXT = "Entregado"
-                elif "submissionstatus" in class_list:
-                    STATUS_TEXT = "Sin entrega"
-                if "submissiongraded" in class_list:
-                    STATUS_TEXT += " y Calificado"
+def login() -> requests.Session:
+    """
+    Esta función autentica al usuario en Moodle, obtiene las cookies necesarias para la sesión,
+    y extrae el sesskey necesario para realizar las llamadas AJAX posteriores.
+    Devuelve un objeto `session` que puede usarse para realizar las solicitudes posteriores.
+    """
+    session = requests.Session()
 
-            # Calificación
-            GRADE_TEXT = ""
-            if grade_cell:
-                for part in grade_cell.stripped_strings:
-                    if "/" in part:
-                        GRADE_TEXT = part.strip()
-                        break
+    # 1. Obtener página de login para extraer logintoken
+    res = session.get(
+        "https://prodep.capacitacioncontinua.mx/login/index.php", headers=HEADERS, verify=False)
+    res.raise_for_status()
+    token = re.search(r'name="logintoken" value="(\w+)"', res.text)
+    if not token:
+        raise RuntimeError("No se pudo obtener logintoken")
+    logintoken = token.group(1)
 
-            # Última modificación
-            modified = modified_cell.text.strip() if modified_cell else ""
+    # 2. Enviar credenciales para iniciar sesión
+    payload = {
+        "username": USERNAME,
+        "password": PASSWORD,
+        "anchor": "",
+        "logintoken": logintoken
+    }
+    res = session.post("https://prodep.capacitacioncontinua.mx/login/index.php",
+                       data=payload, headers=HEADERS, allow_redirects=False, verify=False)
+    res.raise_for_status()
 
-            # Guardar con nombre del entregable
-            status_data[email][f"{label}_status"] = STATUS_TEXT
-            status_data[email][f"{label}_grade"] = GRADE_TEXT
-            status_data[email][f"{label}_modified"] = modified
+    # 3. Forzar visita al dashboard para estabilizar la sesión y extraer sesskey
+    res = session.get("https://prodep.capacitacioncontinua.mx/my/",
+                      headers=HEADERS, verify=False)
+    res.raise_for_status()
+    m = re.search(r'sesskey["\']*\s*:?\s*["\']([a-zA-Z0-9]+)', res.text)
+    if not m:
+        raise RuntimeError("No se encontró sesskey tras login")
+    session.sesskey = m.group(1)
 
-        except ValueError as e:
-            print(f"⚠️ Error procesando fila de {label}: {e}")
+    return session
 
-# =====================================
-# 5. Preparar datos para Google Sheets
-# =====================================
-headers = ["Nombre completo", "Email"]
-for label in ENTREGABLE_LABELS:
-    headers += [
-        f"{label} Estatus",
-        f"{label} Calificación",
-        f"{label} Última modificación"
-    ]
 
-table_data = [headers]
-for email, data in status_data.items():
-    row = [data.get("name", ""), email]
-    for label in ENTREGABLE_LABELS:
-        row += [
-            data.get(f"{label}_status", ""),
-            data.get(f"{label}_grade", ""),
-            data.get(f"{label}_modified", "")
-        ]
-    table_data.append(row)
+def get_all_users(session: requests.Session) -> dict:
+    """
+    Esta función obtiene todos los usuarios de un curso de Moodle mediante la llamada AJAX
+    "gradereport_grader_get_users_in_report". 
+    Devuelve un diccionario donde las claves son los correos electrónicos y los valores son
+    un diccionario con el nombre completo y el correo electrónico del usuario.
+    """
+    ajax = "https://prodep.capacitacioncontinua.mx/lib/ajax/service.php"
+    payload = [{
+        "index": 0,
+        "methodname": "gradereport_grader_get_users_in_report",
+        "args": {"courseid": COURSE_ID}
+    }]
+    url = f"{ajax}?sesskey={session.sesskey}&info=gradereport_grader_get_users_in_report"
+    res = session.post(url, json=payload, headers=HEADERS, verify=False)
+    res.raise_for_status()
+    data = res.json()[0]["data"].get("users", [])
 
-# =======================================
-# 6. Subir resultados a Google Sheets
-# =======================================
-if not CREDENTIALS_FILE:
-    raise ValueError("GOOGLE_CREDENTIALS_FILE no especificado en .env")
+    users = {}
+    for u in data:
+        email = u.get("email")
+        if email:
+            users[email] = {"name": u.get("fullname", ""), "email": email}
 
-creds = Credentials.from_service_account_file(
-    CREDENTIALS_FILE,
-    scopes=[
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-)
+    return users
 
-client = gspread.authorize(creds)
-sheet = client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
 
-# Verificar que hay datos válidos
-if len(table_data) <= 1:
-    raise ValueError(
-        "No se generaron filas válidas para actualizar la hoja de cálculo.")
+def parse_survey_csv(csv_text: str):
+    """
+    Esta función procesa el contenido del CSV de respuestas de la encuesta. 
+    Extrae el nombre, correo electrónico, fecha y las respuestas a las preguntas de la encuesta.
+    Devuelve una lista de diccionarios con los datos de los usuarios y sus respuestas.
+    """
+    lines = csv_text.strip().split("\n")
+    headers = lines[0].split(",")  # Encabezados
 
-# Limpiar hoja y agregar timestamp en A1
-timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-sheet.clear()
-sheet.update("A1", [[f"Actualizado el: {timestamp}"]])
-sheet.update("B1", table_data)
+    # Eliminar comillas dobles si es necesario
+    headers = [header.strip().replace('"', '') for header in headers]
 
-# Registrar historial
-timestamp_log = ["Ejecución registrada el:", timestamp]
-try:
-    log_sheet = client.open(SPREADSHEET_NAME).worksheet("Historial")
-except gspread.exceptions.WorksheetNotFound:
-    log_sheet = client.open(SPREADSHEET_NAME).add_worksheet(
-        title="Historial", rows="100", cols="2")
-log_sheet.append_row(timestamp_log)
+    print(f"Encabezados encontrados: {headers}")
 
-print("✅ Datos exportados correctamente a Google Sheets.")
+    try:
+        # Buscamos la columna 'Dirección Email' y 'Fecha'
+        idx_email = headers.index("Dirección Email")
+        idx_date = headers.index("Fecha")  # Columna de fecha
+    except ValueError:
+        print("No se encontró la columna 'Dirección Email' o 'Fecha' en el archivo CSV.")
+        return []  # Si no se encuentra alguna de las columnas, retornamos una lista vacía
+
+    survey_data = []
+
+    # Procesar las filas del CSV (saltando la primera fila de encabezado)
+    for line in lines[1:]:
+        data = [field.strip().replace('"', '') for field in line.split(",")]
+
+        email = data[idx_email].strip()  # Extraemos el email
+        name = data[0].strip()  # Suponemos que la primera columna es el nombre
+
+        # Combinamos las celdas de la fecha (día, fecha, hora) en una sola celda
+        if len(data) > idx_date + 2:  # Aseguramos que hay 3 celdas para la fecha
+            # Combinamos el día, fecha y hora
+            date_combined = f"{data[idx_date]} {data[idx_date + 1]} {data[idx_date + 2]}"
+            # Reemplazar las celdas de la fecha con la celda combinada
+            data[idx_date] = date_combined
+            data.pop(idx_date + 1)  # Eliminamos la celda duplicada de la fecha
+            data.pop(idx_date + 1)  # Eliminamos la celda duplicada de la hora
+
+        # Las respuestas a las preguntas están en las demás columnas después del nombre y email
+        answers = data[1:idx_date] + data[idx_date + 1:]
+
+        # Almacenamos la fecha combinada para cada usuario
+        survey_data.append({
+            "name": name,
+            "email": email,
+            "answers": answers,
+            "date": data[idx_date]  # Agregar la fecha combinada
+        })
+
+    return survey_data
+
+
+def merge_data(all_users: dict, survey: list) -> list:
+    """
+    Combina los usuarios con las respuestas de la encuesta.
+    Devuelve una lista con las filas para agregar a Google Sheets:
+    1. Nombre completo
+    2. Email
+    3. Respuestas a las preguntas (según lo obtenido en el CSV)
+    """
+    # Cabecera: nombre, email + preguntas
+    if not survey:
+        return []  # Si survey está vacío, retornar una lista vacía.
+
+    # Obtener las preguntas (basado en la primera fila de respuestas)
+    sample_qs = [f"Pregunta {i+1}" for i in range(len(survey[0]["answers"]))]
+
+    header = ["Nombre completo", "Email", "Fecha", "Grupo"] + sample_qs
+    table = [header]
+
+    # Recorrer todos los usuarios
+    for user in all_users.values():
+        # Incluye el email en una nueva celda "Email de Encuestados"
+        row = [user["name"], user["email"]]
+
+        # Buscar las respuestas de este usuario
+        answers = next(
+            (entry["answers"] for entry in survey if entry["email"] == user["email"]), [])
+
+        # Agregar la fecha combinada de este usuario en la fila
+        date = next(
+            (entry["date"] for entry in survey if entry["email"] == user["email"]), "")
+        row.append(date)  # Fecha combinada de este usuario
+
+        row.extend(answers)  # Añadir las respuestas a la fila
+        table.append(row)
+
+    return table
+
+
+def upload_to_sheets(table: list):
+    """
+    Esta función sube los datos procesados a Google Sheets.
+    Limpiará la hoja, agregará el timestamp en A1, y escribirá los datos desde B1.
+    También añadirá un registro en la hoja 'Historial'.
+    """
+    creds = Credentials.from_service_account_file(GOOGLE_CRED_FILE, scopes=[
+                                                  "https://www.googleapis.com/auth/spreadsheets",
+                                                  "https://www.googleapis.com/auth/drive"])
+    client = gspread.authorize(creds)
+    sh = client.open(SPREADSHEET_NAME)
+
+    ws = sh.worksheet(WORKSHEET_NAME)
+    ws.clear()  # Limpiar hoja
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ws.update("A1", [[f"Actualizado el: {ts}"]])
+    ws.update("B1", table)
+
+    # Historial
+    ts_log = ["Ejecución registrada el:", ts]
+    try:
+        hist = sh.worksheet("Historial")
+    except gspread.exceptions.WorksheetNotFound:
+        hist = sh.add_worksheet(title="Historial", rows="100", cols="2")
+    hist.append_row(ts_log)
+
+
+def main():
+    """
+    Función principal que coordina todo el flujo de datos:
+    1. Inicia sesión en Moodle.
+    2. Obtiene todos los usuarios del curso.
+    3. Descarga y procesa los datos de la encuesta.
+    4. Combina las respuestas con los usuarios.
+    5. Sube los datos a Google Sheets.
+    """
+    session = login()
+    users = get_all_users(session)
+    csv_text = download_survey_with_selenium()  # Usar Selenium para obtener el CSV
+    survey = parse_survey_csv(csv_text)
+    table_data = merge_data(users, survey)
+    upload_to_sheets(table_data)
+    print("✅ Encuesta exportada correctamente a Google Sheets.")
+
+
+if __name__ == "__main__":
+    main()
