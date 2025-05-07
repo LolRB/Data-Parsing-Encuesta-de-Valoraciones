@@ -23,6 +23,7 @@ Dependencias necesarias:
 
 import re
 import os
+import csv
 import time
 from datetime import datetime
 import requests
@@ -213,8 +214,11 @@ def parse_survey_csv(csv_text: str):
     Extrae el nombre, correo electrónico, fecha y las respuestas a las preguntas de la encuesta.
     Devuelve una lista de diccionarios con los datos de los usuarios y sus respuestas.
     """
+    # Usamos csv.reader para manejar adecuadamente las comas dentro de las celdas
     lines = csv_text.strip().split("\n")
-    headers = lines[0].split(",")  # Encabezados
+    reader = csv.reader(lines)
+
+    headers = next(reader)  # Obtener los encabezados
 
     # Eliminar comillas dobles si es necesario
     headers = [header.strip().replace('"', '') for header in headers]
@@ -232,22 +236,15 @@ def parse_survey_csv(csv_text: str):
     survey_data = []
 
     # Procesar las filas del CSV (saltando la primera fila de encabezado)
-    for line in lines[1:]:
-        data = [field.strip().replace('"', '') for field in line.split(",")]
+    for data in reader:
+        # Usamos `strip()` para limpiar espacios y reemplazamos comillas dobles si es necesario
+        data = [field.strip().replace('"', '') for field in data]
 
         email = data[idx_email].strip()  # Extraemos el email
         name = data[0].strip()  # Suponemos que la primera columna es el nombre
 
-        # Combinamos las celdas de la fecha (día, fecha, hora) en una sola celda
-        if len(data) > idx_date + 2:  # Aseguramos que hay 3 celdas para la fecha
-            # Combinamos el día, fecha y hora
-            date_combined = f"{data[idx_date]} {data[idx_date + 1]} {data[idx_date + 2]}"
-            # Reemplazar las celdas de la fecha con la celda combinada
-            data[idx_date] = date_combined
-            data.pop(idx_date + 1)  # Eliminamos la celda duplicada de la fecha
-            data.pop(idx_date + 1)  # Eliminamos la celda duplicada de la hora
-
         # Las respuestas a las preguntas están en las demás columnas después del nombre y email
+        # Alineamos las respuestas después del email
         answers = data[1:idx_date] + data[idx_date + 1:]
 
         # Almacenamos la fecha combinada para cada usuario
@@ -276,24 +273,53 @@ def merge_data(all_users: dict, survey: list) -> list:
     # Obtener las preguntas (basado en la primera fila de respuestas)
     sample_qs = [f"Pregunta {i+1}" for i in range(len(survey[0]["answers"]))]
 
-    header = ["Nombre completo", "Email", "Fecha", "Grupo"] + sample_qs
+    # Crear la cabecera (agregar nombre, grupo, fecha, email y preguntas)
+    header = ["Nombre completo", "Grupo",
+              "Fecha", "Email Encuestados"] + sample_qs
     table = [header]
 
     # Recorrer todos los usuarios
     for user in all_users.values():
-        # Incluye el email en una nueva celda "Email de Encuestados"
-        row = [user["name"], user["email"]]
+        # Crear la fila con el nombre
+        row = [user["name"]]
+
+        # Verificar si el usuario respondió la encuesta
+        survey_entry = next(
+            (entry for entry in survey if entry["email"] == user["email"]), None)
+
+        # Si el usuario respondió la encuesta, agregamos el grupo
+        if survey_entry:
+            # Suponemos que el grupo es la primera respuesta
+            group = survey_entry["answers"][0]
+            row.append(group)  # Agregar el grupo
+            # row.append("")  # Vacío para "Emails de No Encuestados"
+        else:
+            # Si no respondió la encuesta, dejar vacío el grupo
+            row.append("")
 
         # Buscar las respuestas de este usuario
-        answers = next(
-            (entry["answers"] for entry in survey if entry["email"] == user["email"]), [])
+        answers = survey_entry["answers"] if survey_entry else []
 
-        # Agregar la fecha combinada de este usuario en la fila
+        # Tomar el correo registrado en la primera respuesta
+        # email_from_survey = answers[0] if answers else user["email"]
+
+        # Reemplazar el email de la columna por el del CSV
+        # row.append(email_from_survey)
+
+        # Agregar la fecha combinada de este usuario en la fila solo si tiene respuesta
         date = next(
             (entry["date"] for entry in survey if entry["email"] == user["email"]), "")
-        row.append(date)  # Fecha combinada de este usuario
 
-        row.extend(answers)  # Añadir las respuestas a la fila
+        if date:
+            row.append(date)  # Fecha combinada de este usuario
+        else:
+            row.append("")  # Si no tiene fecha, dejar vacío
+
+        # Agregar las respuestas a la fila (empezando desde la columna de las preguntas)
+        # Añadir las respuestas de las preguntas sin el email repetido
+        # Empieza desde la segunda respuesta (saltando el correo)
+        row.extend(answers[1:])
+
         table.append(row)
 
     return table
