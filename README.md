@@ -1,35 +1,26 @@
-# 📊 Automatización de Exportación de Estatus y Calificaciones de Entregables de Moodle a Google Sheets
-Este proyecto permite automatizar la extracción de calificaciones de un curso en Moodle y exportarlas a una hoja de cálculo en Google Sheets. Está diseñado específicamente para plataformas Moodle como `https://prodep.capacitacioncontinua.mx`.
+# 📊 Automatización de Exportación de Respuestas de Encuesta de Moodle a Google Sheets
+
+Este proyecto automatiza el proceso de extracción de respuestas de una encuesta de valoración de los cursos en Moodle, y las exporta a una hoja de cálculo de Google Sheets. Está diseñado específicamente para Moodle y permite manejar las respuestas a la encuesta, procesarlas y almacenarlas en Google Sheets para su análisis y visualización.
 
 ## 🚀 Características
 
 - 🔐 **Inicio de sesión automático en Moodle** (como `https://prodep.capacitacioncontinua.mx`) con credenciales seguras desde archivo `.env`.
 
-- 🧠 **Lectura inteligente de múltiples entregables** desde variables configurables (`DELIVERABLE_IDS` y `DELIVERABLE_LABELS`).
+- 📥 **Descarga de respuestas de encuesta** utilizando Selenium para interactuar con la interfaz web de Moodle y hacer clic en el botón de descarga para obtener el archivo CSV con las respuestas.
 
-- 📥 **Obtención de datos completos por entregable:**
+- 🧠 **Procesamiento del archivo CSV** descargado, extrayendo los datos relevantes como nombre, correo electrónico, fecha y respuestas a las preguntas de la encuesta.
 
-    - Nombre del usuario
+- 🧩 **Unificación de datos de los usuarios con sus respuestas** a la encuesta, eliminando duplicados y asegurando que cada respuesta se asocie correctamente con el usuario correspondiente.
 
-    - Correo electrónico
+- 📤 **Exportación directa a Google Sheets,** formateando la información y organizando los datos en celdas para un análisis más eficiente.
 
-    - Estatus de la entrega (Entregado, Borrador, Sin entrega)
+- 🕒 **Registro automático de la fecha de ejecución** en A1 y en una hoja adicional llamada "Historial" para mantener un seguimiento de las ejecuciones previas del script.
 
-    - Calificación obtenida
+- 🔁 **Reintentos automáticos en caso de error:** Si el script encuentra errores al descargar el archivo o procesar los datos, realiza hasta 3 intentos antes de continuar.
 
-    - Fecha y hora de la última modificación
+- ⚙️ **Configuración sencilla y segura** mediante el uso de un archivo `.env` para gestionar variables sensibles como credenciales y parámetros del curso.
 
-- 📊 **Unificación de los datos en una única tabla,** sin duplicar usuarios, incluso si los entregables están en diferente orden.
-
-- 📤 **Exportación directa a Google Sheets,** formateado desde la celda B1.
-
-- 🕒 **Registro automático de la fecha de ejecución** en A1 y en una hoja adicional llamada "Historial".
-
-- 🔁 **Manejo de errores con reintentos automáticos:** si hay una desconexión temporal al consultar un entregable, el script intenta hasta 3 veces antes de continuar.
-
-- ⚙️ **Configuración sencilla y segura** mediante archivo `.env`.
-
-- ⏰ **Compatible con automatización** mediante `Programador de Tareas` (Windows) o `cron` (Linux/macOS).
+- ⏰ **Compatibilidad con automatización** utilizando herramientas de programación de tareas como `Programador de Tareas` en Windows o `cron` en Linux/macOS.
 
 ## 📂 Estructura del proyecto
 
@@ -91,15 +82,15 @@ Para clonar este repositorio, asegúrate de tener acceso autorizado en GitHub.
 - SSH (recomendado) si tienes configurada tu clave SSH:
 
 ```bash
-git clone git@github.com:LolRB/Data-Parsing-Reporte-Final.git
-cd Data-Parsing-Reporte-Final
+git clone git@github.com:LolRB/Data-Parsing-Encuesta-de-Valoraciones.git
+cd Data-Parsing-Encuesta-de-Valoraciones
 ```
 
 - HTTPS (te pedirá usuario y contraseña o token personal):
 
 ```bash
-git clone https://github.com/LolRB/Data-Parsing-Reporte-Final.git
-cd Data-Parsing-Reporte-Final
+git clone https://github.com/LolRB/Data-Parsing-Encuesta-de-Valoraciones.git
+cd Data-Parsing-Encuesta-de-Valoraciones
 ```
 
 🔒 Nota: Si usas HTTPS, GitHub puede solicitar un token de acceso personal en lugar de tu contraseña.
@@ -116,7 +107,7 @@ source venv/bin/activate  # macOS/Linux
 ### 3. Instala las dependencias:
 
 ```bash
-pip install requests beautifulsoup4 gspread google-auth python-dotenv
+pip install requests selenium gspread google-auth python-dotenv
 ```
 
 ## 📄 Google Sheets API Setup
@@ -151,19 +142,17 @@ cp .env.example .env
 |   `USERNAME`                |   Usuario de Moodle                                                          |
 |   `PASSWORD`                |   Contraseña del usuario en Moodle                                           |
 |   `COURSE_ID`               |   ID numérico del curso en Moodle                                            |
+|   `SURVEY_ID`               |   ID de la encuesta en Moodle                                                |
 |   `SPREADSHEET_NAME`        |   Nombre de tu hoja de cálculo en Google Sheets                              |
 |   `WORKSHEET_NAME`          |   Nombre de la pestaña donde se exportarán los datos                         |
 |   `GOOGLE_CREDENTIALS_FILE` |   Nombre del archivo .json con las credenciales de la cuenta de servicio     |
-|   `DELIVERABLE_IDS`         |   Comas separadas con los IDs de los entregables (parte de la URL en Moodle)   |
-|   `DELIVERABLE_LABELS`      |   Comas separadas con nombres legibles para los entregables                    |
 
-🧠 Ejemplo de entregables:
+🧠 Ejemplo de Encuesta Id:
 
 ```.env
-DELIVERABLE_IDS=842,843,844
-DELIVERABLE_LABELS=Entregable 1,Entregable 2,Entregable 3
+SURVEY_ID=123456
 ```
-⚠️ **Importante:** Asegúrate de que `DELIVERABLE_IDS` y `DELIVERABLE_LABELS` tengan **la misma cantidad de elementos y en el mismo orden**, ya que se asocian entre sí directamente.
+⚠️ **Importante:** Asegúrate de que SURVEY_ID coincida con el ID correcto de tu encuesta en Moodle.
 
 ### 🔒 Seguridad
 No subas tu archivo `.env` ni `credentials.json` a ningún repositorio público. Añádelos a tu archivo `.gitignore`:
@@ -182,33 +171,31 @@ python app.py
 ```
 ### ¿Qué hace en cada ejecución?
 
-- 🔐 Inicia sesión automáticamente en Moodle con las credenciales del archivo `.env`.
+- 🔐 Inicia sesión automáticamente en Moodle con las credenciales del archivo .env.
 
-- 📥 Visita las páginas de **cada entregable configurado** en `DELIVERABLE_IDS`.
+- 📥 Descarga el archivo CSV de respuestas de la encuesta usando Selenium.
 
-- 🔎 Extrae los siguientes datos por usuario y por entregable:
+- 🔎 Extrae los siguientes datos por usuario y por encuesta:
 
     - Nombre completo
 
     - Correo electrónico
 
-    - Estatus del entregable (Entregado, Borrador, Sin entrega)
+    - Fecha y hora de la última modificación
 
-    - Calificación obtenida (si aplica)
+    - Respuestas de la encuesta
 
-    - Última modificación (fecha y hora de entrega)
-
-- 🧩 Combina y alinea la información por usuario, evitando duplicados aunque los entregables estén en diferente orden.
+- 🧩 Combina y alinea la información sin duplicar usuarios.
 
 - 💾 Limpia y actualiza la hoja de Google Sheets:
 
-    - Agrega un timestamp en la celda **A1**
+    - Agrega un timestamp en la celda A1
 
-    - Coloca la tabla de datos a partir de **B1**
+    - Coloca la tabla de datos a partir de B1
 
-- 🕒 Registra cada ejecución en una hoja adicional llamada **"Historial"**.
+- 🕒 Registra cada ejecución en una hoja adicional llamada "Historial".
 
-- 🔁 Si ocurre una desconexión o error temporal al acceder a Moodle, el script realiza **hasta 3 reintentos automáticos** antes de continuar.
+- 🔁 Si ocurre un error, el script realiza hasta 3 reintentos automáticos.
 
 ## 🕒 Automatización (opcional)
 
@@ -222,9 +209,9 @@ Puedes usar:
 
 - Python 3.x
 
-- Requests (peticiones HTTP)
+- Selenium (automatización del navegador)
 
-- BeautifulSoup (parseo HTML)
+- Requests (peticiones HTTP)
 
 - gspread + Google API (acceso a hojas de cálculo)
 

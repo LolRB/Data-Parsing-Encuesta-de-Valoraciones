@@ -1,16 +1,19 @@
 """
-Este script automatiza el proceso de extracción de respuestas de la encuesta de valoración 
-de las acciones de formación de los cursos en Moodle. 
+Este script automatiza el proceso de extracción de respuestas de la encuesta de valoración
+de las acciones de formación de los cursos en Moodle.
 
 El flujo de trabajo es el siguiente:
 1. Inicia sesión en Moodle utilizando las credenciales proporcionadas.
-2. Extrae los datos de los usuarios (nombre completo, email) que completaron la encuesta, a través de la llamada a la API de Moodle.
-3. Descarga el archivo CSV de las respuestas de la encuesta utilizando Selenium para interactuar con la página de Moodle y hacer clic en el botón de descarga.
-4. Procesa el contenido del archivo CSV descargado, extrayendo los datos relevantes (nombre, email y respuestas a las preguntas).
+2. Extrae los datos de los usuarios (nombre completo, email) que completaron la encuesta,
+   a través de la llamada a la API de Moodle.
+3. Descarga el archivo CSV de las respuestas de la encuesta utilizando Selenium para interactuar
+   con la página de Moodle y hacer clic en el botón de descarga.
+4. Procesa el contenido del archivo CSV descargado, extrayendo los datos relevantes (nombre, email
+   y respuestas a las preguntas).
 5. Combina los datos de los usuarios con sus respuestas a la encuesta.
 6. Sube los datos combinados a una hoja de Google Sheets para su análisis y visualización.
 
-Este script se conecta a la plataforma Moodle, realiza la autenticación, obtiene los datos de los usuarios,
+El script se conecta a la plataforma Moodle, realiza autenticación, obtiene datos de los usuarios,
 descarga las respuestas de la encuesta y las carga en Google Sheets utilizando la API de Google.
 
 Dependencias necesarias:
@@ -40,27 +43,42 @@ from google.oauth2.service_account import Credentials
 # ===============================
 # 1. Cargar configuración desde .env
 # ===============================
-load_dotenv()
+
+load_dotenv()  # Cargar variables de entorno desde el archivo .env
+
+# Verificar que todas las variables de entorno necesarias están presentes
+required_env_vars = ["USERNAME", "PASSWORD", "COURSE_ID", "SPREADSHEET_NAME",
+                     "WORKSHEET_NAME", "GOOGLE_CREDENTIALS_FILE", "SURVEY_ID"]
+for var in required_env_vars:
+    if not os.getenv(var):
+        raise EnvironmentError(
+            f"La variable de entorno {var} no está definida.")
+
+# Asignar las variables de entorno a las variables locales
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
 COURSE_ID = int(os.getenv("COURSE_ID"))
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME")
 WORKSHEET_NAME = os.getenv("WORKSHEET_NAME")
 GOOGLE_CRED_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE")
-SURVEY_ASSIGN_ID = os.getenv("SURVEY_ASSIGN_ID")
-SURVEY_CSV_PARAM = os.getenv("SURVEY_CSV_PARAM", "")
+SURVEY_ID = os.getenv("SURVEY_ID")
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# ==================================================================
+# Función para configurar el WebDriver de Selenium en modo headless
+# ==================================================================
 
 
 def get_selenium_driver():
     """
-    Configura y devuelve una instancia de WebDriver para Chrome con opciones de ejecución en segundo plano.
-    Este método configura el WebDriver de Selenium para usar Google Chrome en modo 'headless', es decir, sin abrir una ventana del navegador, lo que permite ejecutar el script en entornos sin interfaz gráfica. 
-    El WebDriver es configurado con las opciones necesarias para la ejecución en segundo plano y luego se devuelve para ser utilizado en otras funciones.
+    Configura y devuelve una instancia de WebDriver para Chrome en modo 'headless'.
+    'headless' significa que el navegador se ejecutará sin abrir una ventana visible.
+    Esto es útil para ejecutar el script en entornos sin interfaz gráfica.
 
     Returns:
-        webdriver.Chrome: Instancia del WebDriver de Chrome configurada para ejecutar en segundo plano.
+        webdriver.Chrome: Instancia del WebDriver de Chrome
+        configurada para ejecutar en segundo plano.
     """
     chrome_options = Options()
     # Ejecutar en segundo plano sin abrir el navegador
@@ -71,74 +89,75 @@ def get_selenium_driver():
 
 def download_survey_with_selenium():
     """
-    Utiliza Selenium para abrir el navegador, autenticar, y hacer clic en el botón de descarga
-    para obtener el archivo CSV de la encuesta.
+    Utiliza Selenium para abrir el navegador, autenticarse en Moodle
+    y descargar el archivo CSV con las respuestas.
+
+    Retorna:
+        str: El contenido del archivo CSV descargado.
     """
-    # Inicializar WebDriver (asegúrate de tener el driver para tu navegador)
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
+    try:
+        # Configuración del WebDriver en segundo plano (sin interfaz gráfica)
+        options = Options()
+        options.add_argument("--headless")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
 
-    driver = webdriver.Chrome(service=Service(
-        executable_path="C:/chromedriver-win64/chromedriver-win64/chromedriver.exe"), options=options)
+        # Inicializamos el WebDriver con el path al ejecutable de ChromeDriver
+        driver = webdriver.Chrome(service=Service(
+            executable_path="C:/chromedriver-win64/chromedriver-win64/chromedriver.exe"),
+            options=options)
+        driver.get(
+            f"https://prodep.capacitacioncontinua.mx/mod/feedback/show_entries.php?id={SURVEY_ID}")
+        time.sleep(3)  # Esperar que la página cargue completamente
 
-    # Accede a la página de la encuesta
-    driver.get(
-        f"https://prodep.capacitacioncontinua.mx/mod/feedback/show_entries.php?id={SURVEY_ASSIGN_ID}")
-    time.sleep(3)  # Esperar que la página cargue
+        # Iniciar sesión con las credenciales de usuario
+        driver.find_element(By.NAME, "username").send_keys(USERNAME)
+        driver.find_element(By.NAME, "password").send_keys(PASSWORD)
+        driver.find_element(By.ID, "loginbtn").click()
+        time.sleep(3)  # Esperar a que el login se complete
 
-    # Iniciar sesión con las credenciales
-    driver.find_element(By.NAME, "username").send_keys(USERNAME)
-    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
-    driver.find_element(By.ID, "loginbtn").click()
+        # Esperar a que la página cargue completamente después del login
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, '//form[contains(@class, "dataformatselector")]'))
+        )
 
-    time.sleep(3)  # Esperar a que el login se complete
+        form_id = driver.find_element(
+            By.XPATH, '//form[contains(@class, "dataformatselector")]')
+        select_element = form_id.find_element(By.ID, "downloadtype_download")
+        current_value = select_element.get_attribute('value')
 
-    # Esperar que la página cargue completamente después del login
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.XPATH, '//form[contains(@class, "dataformatselector")]')))
+        # Si la opción CSV no está seleccionada, la cambiamos a CSV
+        if current_value != 'csv':
+            select_element.click()
+            option_csv = select_element.find_element(
+                By.XPATH, "//option[@value='csv']")
+            option_csv.click()
+            time.sleep(2)  # Esperar a que se cambie la opción a CSV
 
-    # Identificar el formulario para la descarga usando su id dinámico
-    form_id = driver.find_element(
-        By.XPATH, '//form[contains(@class, "dataformatselector")]')
+        # Hacer clic en el botón de descarga
+        download_button = form_id.find_element(
+            By.XPATH, '//button[@type="submit"]')
+        download_button.click()
 
-    # Esperar que la opción por defecto (CSV) esté seleccionada. Si no, seleccionamos CSV manualmente
-    select_element = form_id.find_element(By.ID, "downloadtype_download")
-    current_value = select_element.get_attribute('value')
+        time.sleep(5)  # Esperar a que la descarga se complete
 
-    if current_value != 'csv':
-        select_element.click()
-        option_csv = select_element.find_element(
-            By.XPATH, "//option[@value='csv']")
-        option_csv.click()
-        time.sleep(2)  # Esperar a que se cambie la opción a CSV
+        # Ruta del archivo CSV descargado
+        download_path = r"C:\Users\rbueno\Downloads\Encuesta de valoración de las acciones de formación 2024.csv"
 
-    # Ahora hacer clic en el botón de descarga (usando el id dinámico)
-    download_button = form_id.find_element(
-        By.XPATH, '//button[@type="submit"]')
-    download_button.click()
+        # Verificar que el archivo existe antes de leerlo
+        if not os.path.exists(download_path):
+            raise FileNotFoundError(
+                f"Archivo no encontrado en {download_path}. Asegurar la descarga correctamente.")
 
-    # Esperar a que la descarga se complete (ajustar según sea necesario)
-    time.sleep(5)
+        with open(download_path, "r", encoding="utf-8") as file:
+            csv_text = file.read()
 
-    # Path del archivo descargado (asegúrate de que el archivo se guarde en esta ubicación)
-    download_path = r"C:\Users\rbueno\Downloads\Encuesta de valoración de las acciones de formación 2024.csv"
-
-    # Verificar que el archivo existe antes de leerlo
-    if not os.path.exists(download_path):
-        print(
-            f"Error: El archivo no fue encontrado en {download_path}. Asegúrate de que la descarga se haya completado correctamente.")
-        driver.quit()
-        return None
-
-    # Leer el contenido del archivo descargado
-    with open(download_path, "r", encoding="utf-8") as file:
-        csv_text = file.read()
-
-    driver.quit()  # Cerrar el navegador
-
-    return csv_text
+        driver.quit()  # Cerrar el navegador
+        return csv_text
+    except Exception as e:
+        print(f"Error al descargar el archivo con Selenium: {e}")
+        raise
 
 
 def login() -> requests.Session:
@@ -146,10 +165,13 @@ def login() -> requests.Session:
     Esta función autentica al usuario en Moodle, obtiene las cookies necesarias para la sesión,
     y extrae el sesskey necesario para realizar las llamadas AJAX posteriores.
     Devuelve un objeto `session` que puede usarse para realizar las solicitudes posteriores.
+
+    Returns:
+        requests.Session: Objeto de sesión autenticado para realizar solicitudes a Moodle.
     """
     session = requests.Session()
 
-    # 1. Obtener página de login para extraer logintoken
+    # Obtener página de login para extraer logintoken
     res = session.get(
         "https://prodep.capacitacioncontinua.mx/login/index.php", headers=HEADERS, verify=False)
     res.raise_for_status()
@@ -158,7 +180,7 @@ def login() -> requests.Session:
         raise RuntimeError("No se pudo obtener logintoken")
     logintoken = token.group(1)
 
-    # 2. Enviar credenciales para iniciar sesión
+    # Enviar credenciales para iniciar sesión
     payload = {
         "username": USERNAME,
         "password": PASSWORD,
@@ -169,7 +191,7 @@ def login() -> requests.Session:
                        data=payload, headers=HEADERS, allow_redirects=False, verify=False)
     res.raise_for_status()
 
-    # 3. Forzar visita al dashboard para estabilizar la sesión y extraer sesskey
+    # Forzar visita al dashboard para estabilizar la sesión y extraer sesskey
     res = session.get("https://prodep.capacitacioncontinua.mx/my/",
                       headers=HEADERS, verify=False)
     res.raise_for_status()
@@ -187,6 +209,9 @@ def get_all_users(session: requests.Session) -> dict:
     "gradereport_grader_get_users_in_report". 
     Devuelve un diccionario donde las claves son los correos electrónicos y los valores son
     un diccionario con el nombre completo y el correo electrónico del usuario.
+
+    Returns:
+        dict: Diccionario con los datos de los usuarios (correo electrónico, nombre completo).
     """
     ajax = "https://prodep.capacitacioncontinua.mx/lib/ajax/service.php"
     payload = [{
@@ -213,8 +238,13 @@ def parse_survey_csv(csv_text: str):
     Esta función procesa el contenido del CSV de respuestas de la encuesta. 
     Extrae el nombre, correo electrónico, fecha y las respuestas a las preguntas de la encuesta.
     Devuelve una lista de diccionarios con los datos de los usuarios y sus respuestas.
+
+    Args:
+        csv_text (str): El contenido completo del archivo CSV con las respuestas de la encuesta.
+
+    Returns:
+        list: Lista de diccionarios con datos de los usuarios (nombre, email, respuestas, fecha).
     """
-    # Usamos csv.reader para manejar adecuadamente las comas dentro de las celdas
     lines = csv_text.strip().split("\n")
     reader = csv.reader(lines)
 
@@ -237,14 +267,12 @@ def parse_survey_csv(csv_text: str):
 
     # Procesar las filas del CSV (saltando la primera fila de encabezado)
     for data in reader:
-        # Usamos `strip()` para limpiar espacios y reemplazamos comillas dobles si es necesario
         data = [field.strip().replace('"', '') for field in data]
 
         email = data[idx_email].strip()  # Extraemos el email
         name = data[0].strip()  # Suponemos que la primera columna es el nombre
 
         # Las respuestas a las preguntas están en las demás columnas después del nombre y email
-        # Alineamos las respuestas después del email
         answers = data[1:idx_date] + data[idx_date + 1:]
 
         # Almacenamos la fecha combinada para cada usuario
@@ -265,60 +293,47 @@ def merge_data(all_users: dict, survey: list) -> list:
     1. Nombre completo
     2. Email
     3. Respuestas a las preguntas (según lo obtenido en el CSV)
+
+    Args:
+        all_users (dict): Diccionario con los datos de los usuarios (email, nombre).
+        survey (list): Lista de diccionarios con las respuestas de la encuesta.
+
+    Returns:
+        list: Tabla de datos combinados (usuario, grupo, fecha, respuestas) para Google Sheets.
     """
-    # Cabecera: nombre, email + preguntas
     if not survey:
         return []  # Si survey está vacío, retornar una lista vacía.
 
-    # Obtener las preguntas (basado en la primera fila de respuestas)
+    # Obtener las preguntas
     sample_qs = [f"Pregunta {i+1}" for i in range(len(survey[0]["answers"]))]
 
-    # Crear la cabecera (agregar nombre, grupo, fecha, email y preguntas)
-    header = ["Nombre completo", "Grupo",
-              "Fecha", "Email Encuestados"] + sample_qs
+    # Crear la cabecera
+    header = ["Nombre Completo", "Grupos", "Fecha de Encuesta",
+              "Email de Encuestados"] + sample_qs
     table = [header]
 
-    # Recorrer todos los usuarios
     for user in all_users.values():
-        # Crear la fila con el nombre
         row = [user["name"]]
 
         # Verificar si el usuario respondió la encuesta
         survey_entry = next(
             (entry for entry in survey if entry["email"] == user["email"]), None)
 
-        # Si el usuario respondió la encuesta, agregamos el grupo
         if survey_entry:
-            # Suponemos que el grupo es la primera respuesta
+            # Tomar el grupo del primer campo de la respuesta
             group = survey_entry["answers"][0]
             row.append(group)  # Agregar el grupo
-            # row.append("")  # Vacío para "Emails de No Encuestados"
         else:
-            # Si no respondió la encuesta, dejar vacío el grupo
-            row.append("")
+            row.append("")  # Si no respondió, dejar vacío el grupo
 
-        # Buscar las respuestas de este usuario
-        answers = survey_entry["answers"] if survey_entry else []
-
-        # Tomar el correo registrado en la primera respuesta
-        # email_from_survey = answers[0] if answers else user["email"]
-
-        # Reemplazar el email de la columna por el del CSV
-        # row.append(email_from_survey)
-
-        # Agregar la fecha combinada de este usuario en la fila solo si tiene respuesta
+        # Obtener la fecha combinada
         date = next(
             (entry["date"] for entry in survey if entry["email"] == user["email"]), "")
+        row.append(date)  # Fecha combinada de este usuario
 
-        if date:
-            row.append(date)  # Fecha combinada de este usuario
-        else:
-            row.append("")  # Si no tiene fecha, dejar vacío
-
-        # Agregar las respuestas a la fila (empezando desde la columna de las preguntas)
-        # Añadir las respuestas de las preguntas sin el email repetido
-        # Empieza desde la segunda respuesta (saltando el correo)
-        row.extend(answers[1:])
+        # Respuestas del usuario
+        answers = survey_entry["answers"] if survey_entry else []
+        row.extend(answers[1:])  # Añadir las respuestas, omitiendo el correo
 
         table.append(row)
 
@@ -330,6 +345,9 @@ def upload_to_sheets(table: list):
     Esta función sube los datos procesados a Google Sheets.
     Limpiará la hoja, agregará el timestamp en A1, y escribirá los datos desde B1.
     También añadirá un registro en la hoja 'Historial'.
+
+    Args:
+        table (list): Lista de datos para escribir en Google Sheets.
     """
     creds = Credentials.from_service_account_file(GOOGLE_CRED_FILE, scopes=[
                                                   "https://www.googleapis.com/auth/spreadsheets",
@@ -362,13 +380,17 @@ def main():
     4. Combina las respuestas con los usuarios.
     5. Sube los datos a Google Sheets.
     """
-    session = login()
-    users = get_all_users(session)
-    csv_text = download_survey_with_selenium()  # Usar Selenium para obtener el CSV
-    survey = parse_survey_csv(csv_text)
-    table_data = merge_data(users, survey)
-    upload_to_sheets(table_data)
-    print("✅ Encuesta exportada correctamente a Google Sheets.")
+    try:
+        session = login()
+        users = get_all_users(session)
+        csv_text = download_survey_with_selenium()  # Usar Selenium para obtener el CSV
+        survey = parse_survey_csv(csv_text)
+        table_data = merge_data(users, survey)
+        upload_to_sheets(table_data)
+        print("✅ Encuesta exportada correctamente a Google Sheets.")
+    except Exception as e:
+        print(f"Error en el flujo principal: {e}")
+        raise
 
 
 if __name__ == "__main__":
