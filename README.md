@@ -201,7 +201,7 @@ python app.py
 
 Puedes usar:
 
-- 🪟 Windows: Usa el Programador de tareas con un `.bat`.. que ejecute el script.
+- 🪟 Windows: Usa el Programador de tareas con un `.bat` que ejecute el script.
 
 - 🐧 Linux/macOS:Usa `.cron`. para lanzar el script con un `.sh`.
 
