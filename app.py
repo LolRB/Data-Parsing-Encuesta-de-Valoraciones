@@ -40,6 +40,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from google.oauth2.service_account import Credentials
 
+# Ignorar error E0401 de Pylint. Programa corre correctamente
+
 # ===============================
 # 1. Cargar configuración desde .env
 # ===============================
